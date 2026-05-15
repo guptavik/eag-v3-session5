@@ -24,6 +24,40 @@ A Chrome extension that prepares you for upcoming meetings by autonomously gathe
 
 The full evaluator JSON output for both prompts, plus a per-criterion mapping to specific sections of the new `SYSTEM_PROMPT`, is in **[docs/prompt-evaluation.md](docs/prompt-evaluation.md)**.
 
+### Latest evaluator pass — post-bugfix review
+
+After the all-day-events fix landed and the corresponding `excludedAllDay` instruction was added to the prompt, the prompt was re-scored. The fix that prompted the re-review: replacing the hardcoded `2` in the example with the `{{excludedAllDay}}` placeholder so the model interpolates the real tool value instead of echoing the literal number.
+
+```json
+{
+  "explicit_reasoning": true,
+  "structured_output": true,
+  "tool_separation": true,
+  "conversation_loop": true,
+  "instructional_framing": true,
+  "internal_self_checks": true,
+  "reasoning_type_awareness": true,
+  "fallbacks": true,
+  "overall_clarity": "9/9 — clean and production-ready. The {{excludedAllDay}} dynamic variable fix from the previous review has been applied correctly. No new gaps found. This is the strongest version of the prompt reviewed so far."
+}
+```
+
+**Change confirmed**
+
+| Field | Before | After |
+|---|---|---|
+| `excludedAllDay` example | Hardcoded `2` — model might echo it literally | `{{excludedAllDay}}` — model interpolates the real tool value |
+
+**Nothing left to flag.** The prompt now covers all nine dimensions cleanly:
+
+- Reasoning is planned and tagged before tool calls
+- Output format is rigid and parseable
+- Tool phases are sequenced and gated by self-checks
+- Gaps surface visibly (`⚠️ Missing Context`, inline confidence notes) rather than silently dropping
+- Fallback behavior is defined for every failure mode
+
+At this point, the next improvements would come from **real usage data** — e.g. edge cases where the model picks the wrong `hoursAhead` value, or misclassifies an internal attendee as external — rather than anything addressable in the prompt text itself.
+
 ## What it does
 
 Ask it questions like:
