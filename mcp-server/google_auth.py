@@ -36,6 +36,17 @@ TOKEN_FILE = TOKEN_DIR / "google-tokens.json"
 GOOGLE_AUTH_URI = "https://accounts.google.com/o/oauth2/auth"
 GOOGLE_TOKEN_URI = "https://oauth2.googleapis.com/token"
 
+# Every Google scope any tool in this server might need. We request the
+# union of this set on every auth flow so the user sees ONE consent
+# screen instead of being re-prompted the first time a Gmail tool runs
+# after a Calendar-only auth. Per-tool scope hygiene is overkill for a
+# single-user local dev tool, and the alternative is the agent looping
+# on auth-required errors mid-query.
+ALL_GOOGLE_SCOPES = [
+    "https://www.googleapis.com/auth/calendar.readonly",
+    "https://www.googleapis.com/auth/gmail.readonly",
+]
+
 
 def _default_redirect() -> str:
     port = os.environ.get("PORT", "3737")
@@ -54,7 +65,22 @@ _lock = threading.Lock()
 # handle_oauth_callback() build separate Flow instances, we have to
 # stash the verifier between them — keyed by the OAuth `state` value,
 # which Google echoes back on the redirect.
-_pending_pkce: dict[str, str] = {}
+#
+# We also stash the scope list we asked for: Flow.credentials populates
+# `scopes` from oauth2session.scope, which is set at Flow init time. We
+# init the callback Flow with scopes=None to accept whatever Google
+# grants, but in some library versions that leaves creds.scopes empty —
+# and an empty stored scope breaks the scope-coverage check on the next
+# request, causing an infinite re-auth loop.
+class _PendingAuth:
+    __slots__ = ("verifier", "scopes")
+
+    def __init__(self, verifier: str | None, scopes: list[str]) -> None:
+        self.verifier = verifier
+        self.scopes = scopes
+
+
+_pending_pkce: dict[str, _PendingAuth] = {}
 
 
 def _client_config() -> dict:
@@ -85,12 +111,13 @@ def generate_auth_url(scopes: list[str]) -> str:
         prompt="consent",  # always get a refresh_token, even on re-auth
         include_granted_scopes="true",
     )
-    # Capture the verifier the library generated so the callback can
-    # send it back to Google's token endpoint. PKCE may be disabled in
-    # some SDK versions — guard accordingly.
+    # Stash whatever the library generated (PKCE verifier) plus the scope
+    # list we asked for, both keyed by state. The callback uses verifier
+    # to satisfy Google's PKCE check, and falls back to `scopes` if the
+    # token response doesn't surface them on creds.scopes.
     verifier = getattr(flow, "code_verifier", None)
-    if verifier and state:
-        _pending_pkce[state] = verifier
+    if state:
+        _pending_pkce[state] = _PendingAuth(verifier=verifier, scopes=list(scopes))
     return url
 
 
@@ -107,12 +134,45 @@ async def handle_oauth_callback(code: str, state: str | None = None) -> dict:
         # scope set Google returns (which may differ if the user unticked one).
         redirect = os.environ.get("GOOGLE_REDIRECT_URI") or _default_redirect()
         flow = Flow.from_client_config(_client_config(), scopes=None, redirect_uri=redirect)
+        pending: _PendingAuth | None = None
         if state:
-            verifier = _pending_pkce.pop(state, None)
-            if verifier:
-                flow.code_verifier = verifier
+            pending = _pending_pkce.pop(state, None)
+            if pending and pending.verifier:
+                flow.code_verifier = pending.verifier
         flow.fetch_token(code=code)
-        return flow.credentials
+        creds = flow.credentials
+
+        # Library versions vary: some populate creds.scopes from
+        # oauth2session.scope (which is empty when the flow was init'd
+        # with scopes=None), some don't. If we end up with empty scopes
+        # we save `"scope": ""` to disk, which then breaks the scope-
+        # coverage check on every subsequent request and triggers an
+        # infinite re-auth loop. Recover scopes from the token response
+        # (Google echoes the granted scope back), and fall back to what
+        # we originally requested if the response doesn't carry them.
+        if not creds.scopes:
+            token_resp = getattr(flow.oauth2session, "token", None) or {}
+            granted_raw = token_resp.get("scope")
+            if isinstance(granted_raw, str) and granted_raw.strip():
+                scopes_list = granted_raw.split()
+            elif isinstance(granted_raw, (list, tuple)):
+                scopes_list = [str(s) for s in granted_raw]
+            elif pending and pending.scopes:
+                scopes_list = pending.scopes
+            else:
+                scopes_list = []
+
+            if scopes_list:
+                creds = Credentials(
+                    token=creds.token,
+                    refresh_token=creds.refresh_token,
+                    token_uri=creds.token_uri,
+                    client_id=creds.client_id,
+                    client_secret=creds.client_secret,
+                    scopes=scopes_list,
+                    expiry=creds.expiry,
+                )
+        return creds
 
     creds = await asyncio.to_thread(_exchange)
 
@@ -156,12 +216,32 @@ async def get_authorized_credentials(scopes: list[str]) -> Credentials:
 
     stored = await asyncio.to_thread(load_tokens)
     if not stored or not stored.get("refresh_token"):
-        await _trigger_auth_flow(scopes)
+        # Request ALL scopes up front, not just the one this tool needs,
+        # so the user sees one consent screen for the lifetime of the
+        # token instead of one per Google-backed tool.
+        upfront = sorted(set(ALL_GOOGLE_SCOPES) | set(scopes))
+        await _trigger_auth_flow(upfront)
         raise RuntimeError(_auth_required_message(scopes))
 
     stored_scopes = (stored.get("scope") or "").split()
-    if not _scopes_covered(stored_scopes, scopes):
-        union = sorted(set(stored_scopes) | set(scopes))
+    if not stored_scopes:
+        # Empty scope field in an existing token file — caused by an
+        # earlier callback that didn't populate creds.scopes correctly
+        # (fixed above; this branch rescues tokens written before the
+        # fix). Trust the refresh_token covers what's needed; if Google
+        # disagrees it'll surface as a permission error on the actual
+        # API call rather than an infinite re-auth loop.
+        stored_scopes = list(scopes)
+        # Heal the file in place so the next reader sees the right thing.
+        try:
+            stored["scope"] = " ".join(stored_scopes)
+            TOKEN_FILE.write_text(json.dumps(stored, indent=2), encoding="utf-8")
+        except OSError as err:
+            print(f"[google-auth] could not heal empty scope in token file: {err}", flush=True)
+    elif not _scopes_covered(stored_scopes, scopes):
+        # Same idea as the no-token case: union with ALL_GOOGLE_SCOPES so
+        # the user never has to come back for the next missing scope.
+        union = sorted(set(stored_scopes) | set(scopes) | set(ALL_GOOGLE_SCOPES))
         await _trigger_auth_flow(union)
         raise RuntimeError(_auth_required_message(scopes, scope_upgrade=True))
 
