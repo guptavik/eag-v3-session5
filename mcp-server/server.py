@@ -27,6 +27,7 @@ from typing import Annotated, Any, Literal
 import uvicorn
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import Field
 from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
@@ -46,6 +47,30 @@ DEFAULT_GOOGLE_SCOPES = [
 ]
 
 
+def _build_transport_security() -> TransportSecuritySettings:
+    """SDK default rejects any Origin header it doesn't recognize as a
+    DNS-rebinding mitigation. That breaks the Chrome extension popup,
+    whose origin is `chrome-extension://<extensionId>` — an opaque ID
+    that varies per machine and per re-install.
+
+    Two ways to configure:
+      - MCP_ALLOWED_ORIGINS=chrome-extension://abc...,http://localhost:3737
+        Comma-separated exact match (the SDK supports a trailing ":*"
+        wildcard for port patterns, but not glob on the rest of the URL).
+      - Unset → disable DNS-rebinding protection. Safe for this local-only
+        dev tool; never deploy this configuration on a public network.
+    """
+    raw = os.environ.get("MCP_ALLOWED_ORIGINS", "").strip()
+    if raw:
+        origins = [o.strip() for o in raw.split(",") if o.strip()]
+        return TransportSecuritySettings(
+            enable_dns_rebinding_protection=True,
+            allowed_origins=origins,
+            allowed_hosts=[f"localhost:{PORT}", f"127.0.0.1:{PORT}"],
+        )
+    return TransportSecuritySettings(enable_dns_rebinding_protection=False)
+
+
 # ---------------------------------------------------------------------------
 # MCP server (FastMCP) + 5 tool registrations.
 #
@@ -63,6 +88,7 @@ mcp = FastMCP(
     ),
     stateless_http=True,
     json_response=False,
+    transport_security=_build_transport_security(),
 )
 
 
