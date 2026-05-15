@@ -6,7 +6,7 @@ A Chrome extension that prepares you for upcoming meetings by autonomously gathe
 > 1. **Structured-reasoning prompt** — the system prompt now satisfies all nine criteria of the **Prompt Evaluation Assistant** rubric: a `Self-check rules` section with three explicit gates (after fetch, after profiling/email, before brief), a `Reasoning transparency rules` section that tags every plan line as `[LOOKUP]` / `[SYNTHESIS]` / `[SCHEDULING]` / `[SEARCH]` / `[PROFILE]`, explicit fallback rules, inline-confidence annotations, and a `⚠️ Missing Context` section in the brief for unrecoverable gaps. The UI ([popup.js](popup.js) `splitTaggedBlocks()`) renders each tagged block as its own colored, collapsible row so the chain-of-thought is visibly structured at runtime. Full evaluator scoring (before / after) and per-criterion mapping live in **[docs/prompt-evaluation.md](docs/prompt-evaluation.md)**.
 > 2. **MCP server rewritten in Python** — the local MCP server in [`mcp-server/`](mcp-server/) was rewritten from Node.js to **Python 3.12 + Pydantic v2 + the official MCP Python SDK**, managed with **[uv](https://docs.astral.sh/uv/)**. Every tool input and output is a Pydantic model; the JSON Schema the agent sees over `tools/list` is generated directly from the type-annotated function signatures. The HTTP contract over `/mcp` is unchanged — the Chrome extension does not need to change.
 >
-> 📺 **Demo video:** _YouTube link to be added here once recorded._
+> 📺 **Demo video:** https://youtu.be/dBPyOEq_J_I
 
 ## Prompt qualification (Session 5)
 
