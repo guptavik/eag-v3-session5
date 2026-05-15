@@ -112,6 +112,16 @@ def _normalize_event_time(t: dict | None) -> str | None:
     return None
 
 
+def _is_all_day_event(start: dict | None) -> bool:
+    """Calendar API uses start.date (no time) exclusively for all-day events.
+    We use this to flag them so calculate_meeting_stats can exclude them
+    from hour totals — otherwise a single PTO/holiday marker contributes
+    a full 24h to the day's 'meeting load'."""
+    if not start:
+        return False
+    return bool(start.get("date")) and not start.get("dateTime")
+
+
 async def get_upcoming_meetings(args: dict[str, Any]) -> list[dict]:
     parsed = GetUpcomingMeetingsInput.model_validate(args)
     creds = await get_authorized_credentials(CALENDAR_SCOPES)
@@ -164,6 +174,7 @@ async def get_upcoming_meetings(args: dict[str, Any]) -> list[dict]:
                 attendees=attendees,
                 location=ev.get("location") or None,
                 description=ev.get("description") or "",
+                allDay=_is_all_day_event(ev.get("start")),
             )
         )
     return [m.model_dump() for m in meetings]
@@ -491,12 +502,16 @@ async def calculate_meeting_stats(args: dict[str, Any]) -> dict:
 
     # Multi-day events distort meeting-load math when attributed to a
     # single day at full duration. Exclude anything that spans more than
-    # one calendar day (>24 h); exactly-24h all-day events still count.
+    # one calendar day (>24 h). All-day events (PTO / holiday / OOO
+    # markers shown as date-only) are also excluded — they're not
+    # "meetings" in the load sense, but a single one would contribute
+    # 24h to the day total and dwarf real meetings.
     multi_day_threshold_seconds = 24 * 3600
 
     total_seconds = 0.0
     included = 0
     excluded_multi_day = 0
+    excluded_all_day = 0
 
     for m in meetings_iter:
         start_iso = m.get("startTime")
@@ -511,6 +526,23 @@ async def calculate_meeting_stats(args: dict[str, Any]) -> dict:
         dur_seconds = (end_dt - start_dt).total_seconds()
         if dur_seconds <= 0:
             continue
+
+        # All-day exclusion. Two paths:
+        #  (a) explicit flag from get_upcoming_meetings / agent input;
+        #  (b) heuristic: start time exactly matches the all-day shape
+        #      produced by _normalize_event_time (`T00:00:00Z`) AND the
+        #      duration is a clean multiple of 24h. Catches cases where
+        #      the agent passed a meetings array without the allDay
+        #      field set.
+        is_all_day = bool(m.get("allDay")) or (
+            start_iso.endswith("T00:00:00Z")
+            and end_iso.endswith("T00:00:00Z")
+            and dur_seconds % multi_day_threshold_seconds == 0
+        )
+        if is_all_day:
+            excluded_all_day += 1
+            continue
+
         if dur_seconds > multi_day_threshold_seconds:
             excluded_multi_day += 1
             continue
@@ -562,6 +594,7 @@ async def calculate_meeting_stats(args: dict[str, Any]) -> dict:
             averageDurationHours=0.0,
             busiestDay=None,
             excludedMultiDay=excluded_multi_day,
+            excludedAllDay=excluded_all_day,
             meetingDistribution=distribution,
             hoursByDay=hours_by_day,
             loadByDay=load_by_day,
@@ -583,6 +616,7 @@ async def calculate_meeting_stats(args: dict[str, Any]) -> dict:
         averageDurationHours=average_duration_hours,
         busiestDay=busiest_day,
         excludedMultiDay=excluded_multi_day,
+        excludedAllDay=excluded_all_day,
         meetingDistribution=distribution,
         hoursByDay=hours_by_day,
         loadByDay=load_by_day,

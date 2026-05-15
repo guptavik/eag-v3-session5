@@ -85,6 +85,11 @@ class Meeting(StrictModel):
     attendees: list[str] = Field(default_factory=list)
     location: str | None = None
     description: str = ""
+    # True when the calendar entry is an all-day event (had start.date,
+    # no start.dateTime). Stats math must exclude these from hour totals —
+    # otherwise a single OOO/holiday marker contributes a full 24h to the
+    # day's "meeting load".
+    allDay: bool = False
 
 
 # -------------------- searchGmail --------------------
@@ -176,6 +181,10 @@ class StatsMeetingInput(CamelInputBase):
     id: str | None = None
     title: str | None = None
     location: str | None = None
+    allDay: bool = Field(
+        False,
+        description="True for all-day calendar entries (OOO / holiday markers). Excluded from hour totals.",
+    )
 
 
 class CalculateMeetingStatsInput(CamelInputBase):
@@ -226,6 +235,12 @@ class MeetingStats(StrictModel):
     averageDurationHours: float
     busiestDay: str | None
     excludedMultiDay: int
+    # All-day calendar entries (OOO, holidays, multi-day blocks shown as
+    # date-only) skipped from hour totals. Reported separately so the
+    # agent can mention them in the brief without inflating "meeting
+    # load" numbers — a single OOO marker would otherwise contribute
+    # 24h to the day's load.
+    excludedAllDay: int = 0
     meetingDistribution: dict[str, int]
     hoursByDay: dict[str, float]
     loadByDay: dict[str, str]
