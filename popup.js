@@ -528,34 +528,85 @@
     return note;
   }
 
+  // Tagged reasoning blocks emitted by the new SYSTEM_PROMPT.
+  // Each tag = a distinct reasoning type (PLAN, LOOKUP, COMPUTE, VERIFY,
+  // SYNTHESIS) so the UI can color/icon them differently and the user
+  // can scan the agent's chain of thought at a glance.
+  const REASONING_TAGS = {
+    PLAN:      { icon: "📋", label: "PLAN",      cls: "plan" },
+    LOOKUP:    { icon: "🔎", label: "LOOKUP",    cls: "lookup" },
+    COMPUTE:   { icon: "🧮", label: "COMPUTE",   cls: "compute" },
+    VERIFY:    { icon: "✅", label: "VERIFY",    cls: "verify" },
+    SYNTHESIS: { icon: "✍️", label: "SYNTHESIS", cls: "synthesis" }
+  };
+
+  // A single text part from the model can contain multiple tagged blocks
+  // (e.g. [PLAN] ... [LOOKUP] ...). Split on the [TAG] markers and render
+  // each block as its own row; untagged prose falls back to the legacy
+  // "thought" treatment.
   function handleAssistantText(text) {
-    // Reasoning prose the model emits between tool calls. Rendered as a
-    // collapsible "thought" — header always visible, body hidden by default.
+    const blocks = splitTaggedBlocks(text);
+    for (const block of blocks) {
+      stepsContainer.appendChild(renderReasoningBlock(block));
+    }
+  }
+
+  function splitTaggedBlocks(text) {
+    const tagRegex = /\[(PLAN|LOOKUP|COMPUTE|VERIFY|SYNTHESIS)\]/g;
+    const indexes = [];
+    let match;
+    while ((match = tagRegex.exec(text)) !== null) {
+      indexes.push({ tag: match[1], start: match.index, contentStart: match.index + match[0].length });
+    }
+    if (indexes.length === 0) {
+      return [{ tag: null, content: text.trim() }];
+    }
+    const blocks = [];
+    // Any prose before the first tag becomes an untagged block.
+    if (indexes[0].start > 0) {
+      const prefix = text.slice(0, indexes[0].start).trim();
+      if (prefix) blocks.push({ tag: null, content: prefix });
+    }
+    for (let i = 0; i < indexes.length; i++) {
+      const end = i + 1 < indexes.length ? indexes[i + 1].start : text.length;
+      const content = text.slice(indexes[i].contentStart, end).trim();
+      blocks.push({ tag: indexes[i].tag, content });
+    }
+    return blocks;
+  }
+
+  function renderReasoningBlock({ tag, content }) {
+    const meta = tag ? REASONING_TAGS[tag] : null;
     const node = document.createElement("div");
-    node.className = "assistant-text collapsed";
+    node.className = meta
+      ? `assistant-text reasoning-block reasoning-block--${meta.cls} collapsed`
+      : "assistant-text collapsed";
 
     const header = document.createElement("div");
     header.className = "assistant-text-header";
 
-    const preview = text.replace(/\s+/g, " ").trim();
+    const preview = content.replace(/\s+/g, " ").trim();
     const truncated = preview.length > 80 ? preview.slice(0, 80) + "…" : preview;
 
+    const iconText = meta ? meta.icon : "💭";
     header.innerHTML = `
-      <span class="assistant-text-icon">💭</span>
+      <span class="assistant-text-icon"></span>
+      ${meta ? `<span class="reasoning-tag">${meta.label}</span>` : ""}
       <span class="assistant-text-preview"></span>
       <span class="step-chevron">▾</span>
     `;
+    header.querySelector(".assistant-text-icon").textContent = iconText;
     header.querySelector(".assistant-text-preview").textContent = truncated;
 
     const body = document.createElement("div");
     body.className = "assistant-text-body";
-    body.textContent = text;
+    body.textContent = content;
 
     node.appendChild(header);
     node.appendChild(body);
     header.addEventListener("click", () => node.classList.toggle("collapsed"));
 
-    stepsContainer.appendChild(node);
+    return node;
   }
 
   function handleFinalText(text) {

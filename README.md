@@ -1,6 +1,28 @@
-# Meeting Intelligence Agent
+# Meeting Intelligence Agent — Session 5
 
 A Chrome extension that prepares you for upcoming meetings by autonomously gathering context — calendar, email, attendee profiles, company info — and synthesizing it into an actionable brief. Built on Google Gemini 2.5 Flash with a custom multi-step agent loop. Tools live in a local MCP server that hits real APIs (Google Calendar, Gmail, SerpAPI, Gemini for synthesis).
+
+> **Session 5 upgrades:**
+> 1. **Structured-reasoning prompt** — the system prompt now satisfies all nine criteria of the **Prompt Evaluation Assistant** rubric: explicit step-by-step reasoning with named reasoning-type tags (`[PLAN]`, `[LOOKUP]`, `[COMPUTE]`, `[VERIFY]`, `[SYNTHESIS]`), strict reasoning↔tool separation, a 5-item self-check checklist, explicit fallback rules, and a fully worked example. The UI ([popup.js](popup.js) `splitTaggedBlocks()`) renders each tagged block as its own colored, collapsible row so the chain-of-thought is visibly structured at runtime. Full evaluator scoring (before / after) and per-criterion mapping live in **[docs/prompt-evaluation.md](docs/prompt-evaluation.md)**.
+> 2. **MCP server rewritten in Python** — the local MCP server in [`mcp-server/`](mcp-server/) was rewritten from Node.js to **Python 3.12 + Pydantic v2 + the official MCP Python SDK**, managed with **[uv](https://docs.astral.sh/uv/)**. Every tool input and output is a Pydantic model; the JSON Schema the agent sees over `tools/list` is generated directly from the type-annotated function signatures. The HTTP contract over `/mcp` is unchanged — the Chrome extension does not need to change.
+>
+> 📺 **Demo video:** _YouTube link to be added here once recorded._
+
+## Prompt qualification (Session 5)
+
+| Evaluator criterion | Session 4 | Session 5 |
+|---|:---:|:---:|
+| Explicit reasoning instructions | ❌ | ✅ |
+| Structured output format | ✅ | ✅ |
+| Separation of reasoning and tools | ❌ | ✅ |
+| Conversation loop support | ✅ | ✅ |
+| Instructional framing (examples) | ✅ | ✅ |
+| Internal self-checks | ❌ | ✅ |
+| Reasoning-type awareness | ❌ | ✅ |
+| Error handling / fallbacks | ✅ | ✅ |
+| **Total true** | **4 / 8** | **8 / 8** |
+
+The full evaluator JSON output for both prompts, plus a per-criterion mapping to specific sections of the new `SYSTEM_PROMPT`, is in **[docs/prompt-evaluation.md](docs/prompt-evaluation.md)**.
 
 ## What it does
 
@@ -10,7 +32,7 @@ Ask it questions like:
 - *Show me all meetings today and research the attendees*
 - *What's my meeting load this week?*
 
-It plans, calls 3–7 tools (calendar, email, web/LinkedIn, attendee profiles, stats), and returns a structured markdown brief with attendee cards, talking points, and a prep checklist.
+It plans, calls 3–7 tools (calendar, email, web/LinkedIn, attendee profiles, stats), and returns a structured markdown brief with attendee cards, talking points, and a prep checklist. Every step is preceded by a tagged reasoning block (`[PLAN]` / `[LOOKUP]` / `[COMPUTE]`) and audited by a `[VERIFY]` block after the tool results return — visible in the reasoning chain in the popup.
 
 ## Architecture
 
@@ -32,19 +54,20 @@ It plans, calls 3–7 tools (calendar, email, web/LinkedIn, attendee profiles, s
           │ HTTP/SSE :3737                              │   │   │
           │                                             │   │   │
 ┌─────────▼───────────────────────────────────┐         │   │   │
-│ Local MCP Server (Node.js)                  │         │   │   │
+│ Local MCP Server (Python 3.12 + Pydantic v2)│         │   │   │
+│ Managed by uv                                │         │   │   │
 │                                             │         │   │   │
-│  index.js   express + StreamableHTTP         │         │   │   │
-│  server.js  McpServer + tool registry       │         │   │   │
-│  handlers.js                                 │ ────────┘   │   │
+│  server.py  FastMCP + streamable_http_app   │         │   │   │
+│  tools.py   5 async tool implementations    │ ────────┘   │   │
+│  models.py  Pydantic v2 I/O models          │             │   │
 │   ├ getUpcomingMeetings  ──→ Calendar      ─┼─────────────┘   │
 │   ├ searchGmail          ──→ Gmail         ─┼─────────────────┘
 │   ├ searchWebInfo        ──→ Gemini→SerpAPI │
 │   ├ analyzeAttendeeBackground ─→ SerpAPI+Gemini
 │   └ calculateMeetingStats ─→ pure compute   │
 │                                             │
-│  google-auth.js  OAuth + token persistence  │
-│  serpapi.js / llm.js / cache.js             │
+│  google_auth.py  OAuth + token persistence  │
+│  serpapi.py / llm.py / cache.py             │
 │                                             │
 │  ~/.meeting-intel-mcp/google-tokens.json    │
 │  mcp-server/.env (API keys, config)         │
@@ -174,16 +197,33 @@ loop (max 10 iterations):
 
 ## System prompt
 
-The system prompt (`api.js`):
+The system prompt (`api.js` → `SYSTEM_PROMPT`) was rewritten in Session 5 to satisfy the **Prompt Evaluation Assistant** rubric. It is now organized into named, machine-readable sections:
 
-- Names the 5 tools with a one-line purpose each.
-- Encourages **parallel tool calls** to fit within the iteration cap.
-- Tells the model to **prefer `hoursAhead` over a `meetings` array** for `calculateMeetingStats` — passing a long array as a function-call argument can blow the output token budget.
-- Tells the model to **use `endOfToday: true`** for "today" queries so the calendar fetch stops at local midnight instead of now + 24 h.
-- Instructs the model to include a **per-day breakdown** (meeting count + hours per day) in all meeting-load/stats responses, alongside the overall summary.
-- Specifies the markdown structure of the final brief: hero meta line, Attendees, Company Context, Related Emails, Talking Points, Prep Checklist.
-- Instructs the model to use a separate `# Title` heading per meeting in multi-meeting briefs (the UI groups everything under one `#` into a collapsible card).
-- Per-call: appends the user's local timezone with explicit guidance to render meeting times in that zone (e.g. `2:00 PM CST`).
+1. **`# REASONING PROTOCOL`** — explicit "think step-by-step" instructions; defines the five reasoning-type tags the model must emit (`[PLAN]`, `[LOOKUP]`, `[COMPUTE]`, `[VERIFY]`, `[SYNTHESIS]`); every tag is a 1–3 sentence text block.
+2. **`# SEPARATION OF REASONING AND TOOLS`** — reasoning belongs in text content; tool invocations belong in function-call blocks. The prompt shows a *correct* turn and an *incorrect* turn side-by-side.
+3. **`# CONVERSATION LOOP`** — describes the alternating you / tool-result pattern across turns explicitly, with guidance on parallel calls and carrying facts forward.
+4. **`# TOOLS`** — one-line purpose per tool + tool-use rules (`endOfToday` for today queries, prefer `hoursAhead` over a `meetings` array, parallel-call discipline).
+5. **`# SELF-CHECKS (the [VERIFY] block)`** — 5-item checklist the model must run after every batch of tool results and one final time before the brief (TZ offsets, attendee counts, no-invented-URLs, stats sanity, coverage).
+6. **`# FALLBACK RULES`** — explicit handling for tool errors, empty results, uncertain facts, conflicting sources, and the 10-turn iteration budget.
+7. **`# FINAL BRIEF FORMAT`** — markdown schema for the brief: hero meta, Attendees, Company Context, Related Emails, Talking Points, Prep Checklist; multi-meeting rules.
+8. **`# WORKED EXAMPLE`** — a fully rendered 5-turn example showing tagged blocks, parallel tool calls, and the final brief.
+9. **`# OVERALL CLARITY`** — closing one-line rule of thumb.
+
+Per-call: the prompt appends the user's local timezone with explicit guidance to render meeting times in that zone (e.g. `2:00 PM CST`).
+
+The full evaluator output (before / after) and per-criterion mapping is in **[docs/prompt-evaluation.md](docs/prompt-evaluation.md)**.
+
+### How structured reasoning shows up in the UI
+
+The agent's text blocks now arrive with a `[TAG]` prefix. [popup.js](popup.js) `splitTaggedBlocks()` recognizes the tags and renders each block as a distinct colored row with an icon + tag pill — so the reasoning chain is a structured sequence, not a single italicized stream:
+
+| Tag | Icon | Color | When the model emits it |
+|---|---|---|---|
+| `[PLAN]` | 📋 | blue | outlining the next 1–3 steps |
+| `[LOOKUP]` | 🔎 | purple | immediately before a calendar / web / email / attendee tool call |
+| `[COMPUTE]` | 🧮 | amber | immediately before a `calculateMeetingStats` call |
+| `[VERIFY]` | ✅ | green | first block of every turn after tool results return |
+| `[SYNTHESIS]` | ✍️ | red | immediately before the final markdown brief |
 
 ## UI
 
@@ -203,13 +243,20 @@ The system prompt (`api.js`):
 
 ### 1. Install MCP server
 
+The server is **Python 3.12 + Pydantic v2** managed by **[uv](https://docs.astral.sh/uv/)**.
+
 ```sh
+# install uv once if you don't have it (macOS/Linux):
+#   curl -LsSf https://astral.sh/uv/install.sh | sh
+# Windows (PowerShell):
+#   powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+
 cd mcp-server
-npm install
+uv sync                     # creates .venv/ and installs deps from pyproject.toml
 cp .env.example .env
 # fill in SERPAPI_API_KEY, GEMINI_API_KEY (or GOOGLE_API_KEY),
 # GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, OWN_COMPANY_DOMAIN
-npm start
+uv run python server.py
 ```
 
 See [mcp-server/README.md](mcp-server/README.md) for full credential walkthrough (SerpAPI signup, Google Cloud OAuth client, etc.).
@@ -230,40 +277,43 @@ The first time `getUpcomingMeetings` or `searchGmail` is called, the MCP server 
 ## File structure
 
 ```
-session-4/
+eag-v3-session5/
 ├── manifest.json             # MV3 config (host_permissions: Gemini API + localhost:3737)
 ├── popup.html                # UI layout
-├── popup.js                  # UI controller, brief post-processor, markdown renderer
-├── styles.css                # All styles
+├── popup.js                  # UI controller, brief post-processor, markdown renderer,
+│                             # splitTaggedBlocks() for [PLAN]/[LOOKUP]/[VERIFY] rendering
+├── styles.css                # All styles, incl. .reasoning-block--{plan,lookup,…} tints
 ├── agent.js                  # Agent loop (callLLM → handle tool_use → retry → loop)
-├── api.js                    # Gemini wrapper, Anthropic↔Gemini translation, system prompt,
-│                             # JSON-Schema sanitizer for Gemini's OpenAPI subset
+├── api.js                    # Gemini wrapper + the structured-reasoning SYSTEM_PROMPT
 ├── tools.js                  # Thin MCP-client shim (replaces in-extension tool impls)
 ├── mcp-client.js             # JSON-RPC over HTTP+SSE client
 ├── mockData.js               # Legacy mock fixtures (no longer wired into popup.html)
 ├── icons/                    # Extension icons
+├── docs/
+│   └── prompt-evaluation.md  # Prompt Evaluation Assistant scoring (before / after)
 ├── README.md                 # This file
 ├── specification.md          # Original spec
-└── mcp-server/
-    ├── package.json          # Node deps: @modelcontextprotocol/sdk, googleapis, express, ...
-    ├── index.js              # Express + StreamableHTTP transport, OAuth routes
-    ├── server.js             # McpServer + 5 tool registrations (Zod schemas)
-    ├── handlers.js           # Tool implementations
-    ├── google-auth.js        # OAuth client + ~/.meeting-intel-mcp/ token persistence
-    ├── serpapi.js            # SerpAPI client (Google engine)
-    ├── llm.js                # Gemini wrapper for server-side JSON-mode calls
-    ├── cache.js              # Process-local LRU
-    ├── .env.example          # Required env-var template
+└── mcp-server/               # Python 3.12 + Pydantic v2, managed by uv
+    ├── pyproject.toml        # uv-managed dependency manifest
+    ├── .python-version       # pinned to 3.12
+    ├── server.py             # FastMCP + Starlette transport on /mcp; OAuth + /health routes
+    ├── tools.py              # 5 async tool implementations
+    ├── models.py             # Pydantic v2 I/O models (inputs + outputs)
+    ├── google_auth.py        # OAuth client + ~/.meeting-intel-mcp/ token persistence
+    ├── serpapi.py            # async SerpAPI client (httpx)
+    ├── llm.py                # async Gemini wrapper for server-side JSON-mode calls
+    ├── cache.py              # process-local LRU with in-flight dedupe
+    ├── .env.example          # Required env-var template (unchanged from Node version)
     └── README.md             # Server-specific setup walkthrough
 ```
 
 ## Tech stack
 
 - **Extension** — plain HTML/CSS/JavaScript, no framework, no build step. Manifest V3.
-- **MCP server** — Node.js 18+, ES modules, `@modelcontextprotocol/sdk`, `express`, `googleapis`, `zod`, `dotenv`.
+- **MCP server** — Python 3.12, ES-module-equivalent (PEP 621 `[project]`), `mcp` (official Python SDK), `pydantic` v2, `starlette`, `uvicorn`, `httpx`, `google-api-python-client`, `google-auth-oauthlib`, `python-dotenv`. Managed by **[uv](https://docs.astral.sh/uv/)**; see [mcp-server/pyproject.toml](mcp-server/pyproject.toml).
 - **LLM** — Gemini 2.5 Flash for the agent loop (extension) and for server-side reasoning (server). The same key works in both places.
 - **External APIs** — Google Calendar, Gmail, SerpAPI (Google SERP).
-- **Persistence** — `chrome.storage.local` (Gemini key for the agent), `~/.meeting-intel-mcp/google-tokens.json` (OAuth refresh token), `mcp-server/.env` (server-side API keys + config).
+- **Persistence** — `chrome.storage.local` (Gemini key for the agent), `~/.meeting-intel-mcp/google-tokens.json` (OAuth refresh token; format is intentionally compatible with the legacy Node server), `mcp-server/.env` (server-side API keys + config).
 
 ## Limitations
 
@@ -272,13 +322,13 @@ session-4/
 - **No conversation persistence.** Each popup session is independent; closing the popup loses history.
 - **No streaming.** Each LLM turn is a buffered POST/response cycle.
 - **Gemini knowledge cutoff** — `searchWebInfo`'s Gemini-first tier can be wrong for entities created/changed after the cutoff. Freshness keywords route to SerpAPI as a workaround, and Gemini's `_unknown` answer triggers SerpAPI fallback automatically.
-- **SerpAPI free tier is 100 searches/month** — the tiering keeps usage low (most lookups go to Gemini), but heavy daily use will exhaust it. Upgrade to a paid SerpAPI plan or swap providers in `serpapi.js`.
+- **SerpAPI free tier is 100 searches/month** — the tiering keeps usage low (most lookups go to Gemini), but heavy daily use will exhaust it. Upgrade to a paid SerpAPI plan or swap providers in [mcp-server/serpapi.py](mcp-server/serpapi.py).
 
 ## Future enhancements
 
 ### Short term
 
-- **Real web search beyond Google SERP** — `serpapi.js` is a thin adapter; swapping for Tavily, Brave, or a self-hosted SearXNG is a one-file change.
+- **Real web search beyond Google SERP** — [mcp-server/serpapi.py](mcp-server/serpapi.py) is a thin adapter; swapping for Tavily, Brave, or a self-hosted SearXNG is a one-file change.
 - **Recent-news enrichment** — populate `recentNews[]` for `searchWebInfo` companies via a SerpAPI news-engine call (currently empty by default).
 - **Streaming responses** — switch to Server-Sent Events for the Gemini call so reasoning prose shows token-by-token within a turn.
 - **Conversation persistence** — move the agent loop into a background service worker so long-running tasks survive popup close.
