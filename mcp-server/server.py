@@ -287,6 +287,7 @@ async def auth_google(request: Request) -> RedirectResponse | HTMLResponse:
 @mcp.custom_route("/oauth/google/callback", methods=["GET"])
 async def oauth_callback(request: Request) -> HTMLResponse:
     code = request.query_params.get("code")
+    state = request.query_params.get("state")
     error = request.query_params.get("error")
     if error:
         return HTMLResponse(_html_page("Authorization failed", str(error)), status_code=400)
@@ -295,7 +296,7 @@ async def oauth_callback(request: Request) -> HTMLResponse:
             _html_page("Authorization failed", "Missing authorization code."), status_code=400
         )
     try:
-        await handle_oauth_callback(code)
+        await handle_oauth_callback(code, state=state)
     except Exception as exc:
         print(f"[oauth] callback error: {exc}", flush=True)
         return HTMLResponse(_html_page("Authorization failed", str(exc)), status_code=500)

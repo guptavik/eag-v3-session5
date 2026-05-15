@@ -48,6 +48,14 @@ _cached_creds: Credentials | None = None
 _cached_scopes: list[str] | None = None
 _lock = threading.Lock()
 
+# google-auth-oauthlib's Flow auto-generates a PKCE code_verifier when
+# authorization_url() is called, and Google's token endpoint requires
+# the same verifier on the exchange. Because generate_auth_url() and
+# handle_oauth_callback() build separate Flow instances, we have to
+# stash the verifier between them — keyed by the OAuth `state` value,
+# which Google echoes back on the redirect.
+_pending_pkce: dict[str, str] = {}
+
 
 def _client_config() -> dict:
     client_id = os.environ.get("GOOGLE_CLIENT_ID")
@@ -72,23 +80,37 @@ def _client_config() -> dict:
 def generate_auth_url(scopes: list[str]) -> str:
     redirect = os.environ.get("GOOGLE_REDIRECT_URI") or _default_redirect()
     flow = Flow.from_client_config(_client_config(), scopes=scopes, redirect_uri=redirect)
-    url, _ = flow.authorization_url(
+    url, state = flow.authorization_url(
         access_type="offline",
         prompt="consent",  # always get a refresh_token, even on re-auth
         include_granted_scopes="true",
     )
+    # Capture the verifier the library generated so the callback can
+    # send it back to Google's token endpoint. PKCE may be disabled in
+    # some SDK versions — guard accordingly.
+    verifier = getattr(flow, "code_verifier", None)
+    if verifier and state:
+        _pending_pkce[state] = verifier
     return url
 
 
-async def handle_oauth_callback(code: str) -> dict:
+async def handle_oauth_callback(code: str, state: str | None = None) -> dict:
     """Exchange an authorization code (from the OAuth redirect) for tokens
-    and persist them. Called from the /oauth/google/callback route."""
+    and persist them. Called from the /oauth/google/callback route.
+
+    `state` is the OAuth state Google echoes back; we use it to recover
+    the PKCE code_verifier that was generated during generate_auth_url.
+    """
 
     def _exchange() -> Credentials:
         # Build the flow without scopes so token_endpoint accepts the granted
         # scope set Google returns (which may differ if the user unticked one).
         redirect = os.environ.get("GOOGLE_REDIRECT_URI") or _default_redirect()
         flow = Flow.from_client_config(_client_config(), scopes=None, redirect_uri=redirect)
+        if state:
+            verifier = _pending_pkce.pop(state, None)
+            if verifier:
+                flow.code_verifier = verifier
         flow.fetch_token(code=code)
         return flow.credentials
 
