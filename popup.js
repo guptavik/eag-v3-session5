@@ -528,22 +528,22 @@
     return note;
   }
 
-  // Tagged reasoning blocks emitted by the new SYSTEM_PROMPT.
-  // Each tag = a distinct reasoning type (PLAN, LOOKUP, COMPUTE, VERIFY,
-  // SYNTHESIS) so the UI can color/icon them differently and the user
-  // can scan the agent's chain of thought at a glance.
+  // Tagged reasoning blocks emitted by the SYSTEM_PROMPT's
+  // "Reasoning transparency rules" section. Each tag = a distinct
+  // reasoning type so the UI can color/icon them differently and the
+  // user can scan the agent's chain of thought at a glance.
   const REASONING_TAGS = {
-    PLAN:      { icon: "📋", label: "PLAN",      cls: "plan" },
-    LOOKUP:    { icon: "🔎", label: "LOOKUP",    cls: "lookup" },
-    COMPUTE:   { icon: "🧮", label: "COMPUTE",   cls: "compute" },
-    VERIFY:    { icon: "✅", label: "VERIFY",    cls: "verify" },
-    SYNTHESIS: { icon: "✍️", label: "SYNTHESIS", cls: "synthesis" }
+    LOOKUP:     { icon: "🔎", label: "LOOKUP",     cls: "lookup" },
+    SYNTHESIS:  { icon: "✍️", label: "SYNTHESIS",  cls: "synthesis" },
+    SCHEDULING: { icon: "📅", label: "SCHEDULING", cls: "scheduling" },
+    SEARCH:     { icon: "🌐", label: "SEARCH",     cls: "search" },
+    PROFILE:    { icon: "👤", label: "PROFILE",    cls: "profile" }
   };
 
   // A single text part from the model can contain multiple tagged blocks
-  // (e.g. [PLAN] ... [LOOKUP] ...). Split on the [TAG] markers and render
-  // each block as its own row; untagged prose falls back to the legacy
-  // "thought" treatment.
+  // (e.g. "... [LOOKUP] ... [PROFILE] ..."). Split on the [TAG] markers
+  // and render each block as its own row; untagged prose falls back to
+  // the legacy "thought" treatment.
   function handleAssistantText(text) {
     const blocks = splitTaggedBlocks(text);
     for (const block of blocks) {
@@ -552,7 +552,7 @@
   }
 
   function splitTaggedBlocks(text) {
-    const tagRegex = /\[(PLAN|LOOKUP|COMPUTE|VERIFY|SYNTHESIS)\]/g;
+    const tagRegex = /\[(LOOKUP|SYNTHESIS|SCHEDULING|SEARCH|PROFILE)\]/g;
     const indexes = [];
     let match;
     while ((match = tagRegex.exec(text)) !== null) {

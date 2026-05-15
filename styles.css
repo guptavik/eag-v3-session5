@@ -809,14 +809,6 @@ pre {
   font-style: normal;
 }
 
-.reasoning-block--plan {
-  border-left-color: #0969da;
-  background: #ddf4ff;
-}
-.reasoning-block--plan .reasoning-tag {
-  background: #0969da;
-}
-
 .reasoning-block--lookup {
   border-left-color: #8250df;
   background: #f5edff;
@@ -825,28 +817,36 @@ pre {
   background: #8250df;
 }
 
-.reasoning-block--compute {
-  border-left-color: #bf8700;
-  background: #fff8c5;
-}
-.reasoning-block--compute .reasoning-tag {
-  background: #bf8700;
-}
-
-.reasoning-block--verify {
-  border-left-color: #1a7f37;
-  background: #dafbe1;
-}
-.reasoning-block--verify .reasoning-tag {
-  background: #1a7f37;
-}
-
 .reasoning-block--synthesis {
   border-left-color: #cf222e;
   background: #ffebe9;
 }
 .reasoning-block--synthesis .reasoning-tag {
   background: #cf222e;
+}
+
+.reasoning-block--scheduling {
+  border-left-color: #0969da;
+  background: #ddf4ff;
+}
+.reasoning-block--scheduling .reasoning-tag {
+  background: #0969da;
+}
+
+.reasoning-block--search {
+  border-left-color: #bf8700;
+  background: #fff8c5;
+}
+.reasoning-block--search .reasoning-tag {
+  background: #bf8700;
+}
+
+.reasoning-block--profile {
+  border-left-color: #1a7f37;
+  background: #dafbe1;
+}
+.reasoning-block--profile .reasoning-tag {
+  background: #1a7f37;
 }
 
 /* ---- Brief ---- */

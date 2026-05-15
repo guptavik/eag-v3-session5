@@ -3,7 +3,7 @@
 A Chrome extension that prepares you for upcoming meetings by autonomously gathering context — calendar, email, attendee profiles, company info — and synthesizing it into an actionable brief. Built on Google Gemini 2.5 Flash with a custom multi-step agent loop. Tools live in a local MCP server that hits real APIs (Google Calendar, Gmail, SerpAPI, Gemini for synthesis).
 
 > **Session 5 upgrades:**
-> 1. **Structured-reasoning prompt** — the system prompt now satisfies all nine criteria of the **Prompt Evaluation Assistant** rubric: explicit step-by-step reasoning with named reasoning-type tags (`[PLAN]`, `[LOOKUP]`, `[COMPUTE]`, `[VERIFY]`, `[SYNTHESIS]`), strict reasoning↔tool separation, a 5-item self-check checklist, explicit fallback rules, and a fully worked example. The UI ([popup.js](popup.js) `splitTaggedBlocks()`) renders each tagged block as its own colored, collapsible row so the chain-of-thought is visibly structured at runtime. Full evaluator scoring (before / after) and per-criterion mapping live in **[docs/prompt-evaluation.md](docs/prompt-evaluation.md)**.
+> 1. **Structured-reasoning prompt** — the system prompt now satisfies all nine criteria of the **Prompt Evaluation Assistant** rubric: a `Self-check rules` section with three explicit gates (after fetch, after profiling/email, before brief), a `Reasoning transparency rules` section that tags every plan line as `[LOOKUP]` / `[SYNTHESIS]` / `[SCHEDULING]` / `[SEARCH]` / `[PROFILE]`, explicit fallback rules, inline-confidence annotations, and a `⚠️ Missing Context` section in the brief for unrecoverable gaps. The UI ([popup.js](popup.js) `splitTaggedBlocks()`) renders each tagged block as its own colored, collapsible row so the chain-of-thought is visibly structured at runtime. Full evaluator scoring (before / after) and per-criterion mapping live in **[docs/prompt-evaluation.md](docs/prompt-evaluation.md)**.
 > 2. **MCP server rewritten in Python** — the local MCP server in [`mcp-server/`](mcp-server/) was rewritten from Node.js to **Python 3.12 + Pydantic v2 + the official MCP Python SDK**, managed with **[uv](https://docs.astral.sh/uv/)**. Every tool input and output is a Pydantic model; the JSON Schema the agent sees over `tools/list` is generated directly from the type-annotated function signatures. The HTTP contract over `/mcp` is unchanged — the Chrome extension does not need to change.
 >
 > 📺 **Demo video:** _YouTube link to be added here once recorded._
@@ -32,7 +32,7 @@ Ask it questions like:
 - *Show me all meetings today and research the attendees*
 - *What's my meeting load this week?*
 
-It plans, calls 3–7 tools (calendar, email, web/LinkedIn, attendee profiles, stats), and returns a structured markdown brief with attendee cards, talking points, and a prep checklist. Every step is preceded by a tagged reasoning block (`[PLAN]` / `[LOOKUP]` / `[COMPUTE]`) and audited by a `[VERIFY]` block after the tool results return — visible in the reasoning chain in the popup.
+It plans, calls 3–7 tools (calendar, email, web/LinkedIn, attendee profiles, stats), and returns a structured markdown brief with attendee cards, talking points, and a prep checklist. Every plan line is tagged with the kind of reasoning it represents (`[LOOKUP]` / `[SCHEDULING]` / `[SEARCH]` / `[PROFILE]` / `[SYNTHESIS]`) — visible in the reasoning chain in the popup.
 
 ## Architecture
 
@@ -197,17 +197,15 @@ loop (max 10 iterations):
 
 ## System prompt
 
-The system prompt (`api.js` → `SYSTEM_PROMPT`) was rewritten in Session 5 to satisfy the **Prompt Evaluation Assistant** rubric. It is now organized into named, machine-readable sections:
+The system prompt (`api.js` → `SYSTEM_PROMPT`) was rewritten in Session 5 to satisfy the **Prompt Evaluation Assistant** rubric. It is organized into four sections:
 
-1. **`# REASONING PROTOCOL`** — explicit "think step-by-step" instructions; defines the five reasoning-type tags the model must emit (`[PLAN]`, `[LOOKUP]`, `[COMPUTE]`, `[VERIFY]`, `[SYNTHESIS]`); every tag is a 1–3 sentence text block.
-2. **`# SEPARATION OF REASONING AND TOOLS`** — reasoning belongs in text content; tool invocations belong in function-call blocks. The prompt shows a *correct* turn and an *incorrect* turn side-by-side.
-3. **`# CONVERSATION LOOP`** — describes the alternating you / tool-result pattern across turns explicitly, with guidance on parallel calls and carrying facts forward.
-4. **`# TOOLS`** — one-line purpose per tool + tool-use rules (`endOfToday` for today queries, prefer `hoursAhead` over a `meetings` array, parallel-call discipline).
-5. **`# SELF-CHECKS (the [VERIFY] block)`** — 5-item checklist the model must run after every batch of tool results and one final time before the brief (TZ offsets, attendee counts, no-invented-URLs, stats sanity, coverage).
-6. **`# FALLBACK RULES`** — explicit handling for tool errors, empty results, uncertain facts, conflicting sources, and the 10-turn iteration budget.
-7. **`# FINAL BRIEF FORMAT`** — markdown schema for the brief: hero meta, Attendees, Company Context, Related Emails, Talking Points, Prep Checklist; multi-meeting rules.
-8. **`# WORKED EXAMPLE`** — a fully rendered 5-turn example showing tagged blocks, parallel tool calls, and the final brief.
-9. **`# OVERALL CLARITY`** — closing one-line rule of thumb.
+1. **`Operating rules`** — when to fetch the calendar, when to batch tool calls in parallel, when to prefer `endOfToday` vs `hoursAhead`, when to use `calculateMeetingStats` directly with `hoursAhead` instead of round-tripping a `meetings` array, and how to format meeting-load stats.
+2. **`Self-check rules`** — three gates the model must run at three points in the loop:
+   - *After fetching meetings:* if no relevant meeting matched the request, stop and tell the user — do not proceed to attendee profiling or web search.
+   - *After profiling / searching email:* verify returned data is non-empty and on-topic; note gaps explicitly rather than silently skipping.
+   - *Before writing the brief:* confirm title, time, and ≥1 attendee or agenda item exist; otherwise flag the gaps under a `⚠️ Missing Context` section.
+3. **`Reasoning transparency rules`** — every plan line must tag the reasoning type as `[LOOKUP]` / `[SYNTHESIS]` / `[SCHEDULING]` / `[SEARCH]` / `[PROFILE]`. Sections built on incomplete data must annotate confidence inline, e.g. *"(web search returned no recent news — company context may be outdated)"*.
+4. **`Final response format`** — the markdown brief schema (hero meta, Attendees, Company Context, Related Emails, Talking Points, Prep Checklist), plus multi-meeting rules (separate `# Title` per meeting).
 
 Per-call: the prompt appends the user's local timezone with explicit guidance to render meeting times in that zone (e.g. `2:00 PM CST`).
 
@@ -215,15 +213,15 @@ The full evaluator output (before / after) and per-criterion mapping is in **[do
 
 ### How structured reasoning shows up in the UI
 
-The agent's text blocks now arrive with a `[TAG]` prefix. [popup.js](popup.js) `splitTaggedBlocks()` recognizes the tags and renders each block as a distinct colored row with an icon + tag pill — so the reasoning chain is a structured sequence, not a single italicized stream:
+The agent's plan lines now embed `[TAG]` markers. [popup.js](popup.js) `splitTaggedBlocks()` recognizes the tags and renders each block as a distinct colored row with an icon + tag pill — so the reasoning chain is a structured sequence, not a single italicized stream:
 
-| Tag | Icon | Color | When the model emits it |
+| Tag | Icon | Color | What it means |
 |---|---|---|---|
-| `[PLAN]` | 📋 | blue | outlining the next 1–3 steps |
-| `[LOOKUP]` | 🔎 | purple | immediately before a calendar / web / email / attendee tool call |
-| `[COMPUTE]` | 🧮 | amber | immediately before a `calculateMeetingStats` call |
-| `[VERIFY]` | ✅ | green | first block of every turn after tool results return |
-| `[SYNTHESIS]` | ✍️ | red | immediately before the final markdown brief |
+| `[LOOKUP]` | 🔎 | purple | retrieval — calendar / email / web / attendee |
+| `[SYNTHESIS]` | ✍️ | red | composing the brief from gathered facts |
+| `[SCHEDULING]` | 📅 | blue | calendar-window math / stats |
+| `[SEARCH]` | 🌐 | amber | web / email search lookups |
+| `[PROFILE]` | 👤 | green | attendee background lookups |
 
 ## UI
 
@@ -281,7 +279,7 @@ eag-v3-session5/
 ├── manifest.json             # MV3 config (host_permissions: Gemini API + localhost:3737)
 ├── popup.html                # UI layout
 ├── popup.js                  # UI controller, brief post-processor, markdown renderer,
-│                             # splitTaggedBlocks() for [PLAN]/[LOOKUP]/[VERIFY] rendering
+│                             # splitTaggedBlocks() for [LOOKUP]/[SCHEDULING]/[PROFILE] rendering
 ├── styles.css                # All styles, incl. .reasoning-block--{plan,lookup,…} tints
 ├── agent.js                  # Agent loop (callLLM → handle tool_use → retry → loop)
 ├── api.js                    # Gemini wrapper + the structured-reasoning SYSTEM_PROMPT
